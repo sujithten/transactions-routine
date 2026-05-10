@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code
+.claude/
+
+# Go build artifacts
+*.exe
+*.out
+bin/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Environment files
+.env
+.env.*
+
+# Swagger generated files (regenerated during Docker build)
+docs/swagger.json
+docs/swagger.yaml
