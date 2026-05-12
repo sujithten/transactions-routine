@@ -48,11 +48,19 @@ func TestMain(m *testing.M) {
 
 	acctRepo := repository.NewAccountRepository(pool)
 	txRepo := repository.NewTransactionRepository(pool)
-	opRepo := repository.NewOperationTypeRepository(pool)
 	installmentRepo := repository.NewInstallmentRepository(pool)
 
 	acctSvc := service.NewAccountService(acctRepo)
-	txSvc := service.NewTransactionService(repository.NewPoolBeginner(pool), txRepo, opRepo, acctRepo, installmentRepo)
+	txSvc := service.NewTransactionService(
+		repository.NewPoolBeginner(pool),
+		acctRepo,
+		map[int]service.OperationStrategy{
+			1: service.NewDebitStrategy(txRepo, 1),
+			2: service.NewInstallmentStrategy(txRepo, installmentRepo),
+			3: service.NewDebitStrategy(txRepo, 3),
+			4: service.NewCreditStrategy(txRepo, 4),
+		},
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /accounts", handler.NewAccountHandler(acctSvc).CreateAccount)
@@ -61,7 +69,9 @@ func TestMain(m *testing.M) {
 
 	srv = httptest.NewServer(mux)
 
+	truncateAll(pool)
 	code := m.Run()
+	truncateAll(pool)
 
 	srv.Close()
 	pool.Close()
@@ -84,14 +94,18 @@ func runMigrations(dbURL string) error {
 	return nil
 }
 
+func truncateAll(p *pgxpool.Pool) {
+	_, err := p.Exec(context.Background(),
+		"TRUNCATE installment_schedules, installment_plans, transactions, accounts CASCADE")
+	if err != nil {
+		panic("truncateAll: " + err.Error())
+	}
+}
+
 // truncate clears all data between tests. CASCADE handles FK order automatically.
 func truncate(t *testing.T) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(),
-		"TRUNCATE installment_schedules, installment_plans, transactions, accounts CASCADE")
-	if err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
+	truncateAll(pool)
 }
 
 func postJSON(t *testing.T, path string, body any) *http.Response {

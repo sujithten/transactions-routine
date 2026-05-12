@@ -48,12 +48,20 @@ func main() {
 	// repositories
 	acctRepo := repository.NewAccountRepository(pool)
 	txRepo := repository.NewTransactionRepository(pool)
-	opRepo := repository.NewOperationTypeRepository(pool)
 	installmentRepo := repository.NewInstallmentRepository(pool)
 
 	// services
 	acctSvc := service.NewAccountService(acctRepo)
-	txSvc := service.NewTransactionService(repository.NewPoolBeginner(pool), txRepo, opRepo, acctRepo, installmentRepo)
+	txSvc := service.NewTransactionService(
+		repository.NewPoolBeginner(pool),
+		acctRepo,
+		map[int]service.OperationStrategy{
+			1: service.NewDebitStrategy(txRepo, 1),
+			2: service.NewInstallmentStrategy(txRepo, installmentRepo),
+			3: service.NewDebitStrategy(txRepo, 3),
+			4: service.NewCreditStrategy(txRepo, 4),
+		},
+	)
 
 	// handlers
 	acctHandler := handler.NewAccountHandler(acctSvc)

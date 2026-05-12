@@ -31,6 +31,7 @@ go test ./internal/...
 **Integration tests** (requires Docker — spins up Postgres automatically):
 
 ```bash
+docker compose --profile test build test
 docker compose --profile test run --rm test
 ```
 

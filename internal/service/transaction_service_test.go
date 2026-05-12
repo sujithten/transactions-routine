@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -21,8 +22,8 @@ func (s *stubBeginner) Begin(_ context.Context) (repository.Tx, error) {
 type stubTx struct{}
 
 func (s *stubTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) { return nil, nil }
-func (s *stubTx) Commit(_ context.Context) error                                 { return nil }
-func (s *stubTx) Rollback(_ context.Context) error                               { return nil }
+func (s *stubTx) Commit(_ context.Context) error                                { return nil }
+func (s *stubTx) Rollback(_ context.Context) error                              { return nil }
 
 type stubAccountRepo struct {
 	account *domain.Account
@@ -35,15 +36,6 @@ func (s *stubAccountRepo) CreateAccount(_ context.Context, documentNumber string
 
 func (s *stubAccountRepo) GetAccountByID(_ context.Context, _ string) (*domain.Account, error) {
 	return s.account, s.err
-}
-
-type stubOperationTypeRepo struct {
-	opType *domain.OperationType
-	err    error
-}
-
-func (s *stubOperationTypeRepo) GetOperationTypeByID(_ context.Context, _ int) (*domain.OperationType, error) {
-	return s.opType, s.err
 }
 
 type stubTransactionRepo struct {
@@ -71,48 +63,14 @@ func (s *stubInstallmentRepo) CreatePlanWithSchedules(_ context.Context, _ repos
 func newSvc(txRepo repository.TransactionRepository) *TransactionService {
 	return NewTransactionService(
 		&stubBeginner{},
-		txRepo,
-		&stubOperationTypeRepo{opType: &domain.OperationType{ID: 1}},
 		&stubAccountRepo{account: &domain.Account{ID: "00000000-0000-0000-0000-000000000001"}},
-		&stubInstallmentRepo{},
+		map[int]OperationStrategy{
+			1: NewDebitStrategy(txRepo, 1),
+			2: NewInstallmentStrategy(txRepo, &stubInstallmentRepo{}),
+			3: NewDebitStrategy(txRepo, 3),
+			4: NewCreditStrategy(txRepo, 4),
+		},
 	)
-}
-
-// --- enforceSign tests ---
-
-func TestEnforceSign(t *testing.T) {
-	cases := []struct {
-		name     string
-		opTypeID int
-		input    float64
-		wantNeg  bool
-	}{
-		{"normal purchase positive input", 1, 50.0, true},
-		{"normal purchase negative input", 1, -50.0, true},
-		{"installments positive input", 2, 30.0, true},
-		{"withdrawal positive input", 3, 20.0, true},
-		{"credit voucher positive input", 4, 60.0, false},
-		{"credit voucher negative input", 4, -60.0, false},
-		{"zero amount", 1, 0.0, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := enforceSign(tc.opTypeID, tc.input)
-			if tc.input == 0.0 {
-				if got != 0.0 {
-					t.Errorf("expected 0, got %f", got)
-				}
-				return
-			}
-			if tc.wantNeg && got >= 0 {
-				t.Errorf("expected negative, got %f", got)
-			}
-			if !tc.wantNeg && got <= 0 {
-				t.Errorf("expected positive, got %f", got)
-			}
-		})
-	}
 }
 
 // --- CreateTransaction: sign enforcement ---
@@ -130,10 +88,10 @@ func TestCreateTransaction_SignEnforced(t *testing.T) {
 func TestCreateTransaction_InvalidAccount(t *testing.T) {
 	svc := NewTransactionService(
 		&stubBeginner{},
-		&stubTransactionRepo{},
-		&stubOperationTypeRepo{opType: &domain.OperationType{ID: 1}},
 		&stubAccountRepo{err: repository.ErrNotFound},
-		&stubInstallmentRepo{},
+		map[int]OperationStrategy{
+			1: NewDebitStrategy(&stubTransactionRepo{}, 1),
+		},
 	)
 	_, err := svc.CreateTransaction(context.Background(), "bad-uuid", 1, 50.0, 0)
 	if err == nil {
@@ -142,16 +100,9 @@ func TestCreateTransaction_InvalidAccount(t *testing.T) {
 }
 
 func TestCreateTransaction_InvalidOperationType(t *testing.T) {
-	svc := NewTransactionService(
-		&stubBeginner{},
-		&stubTransactionRepo{},
-		&stubOperationTypeRepo{err: repository.ErrNotFound},
-		&stubAccountRepo{account: &domain.Account{ID: "00000000-0000-0000-0000-000000000001"}},
-		&stubInstallmentRepo{},
-	)
-	_, err := svc.CreateTransaction(context.Background(), "00000000-0000-0000-0000-000000000001", 99, 50.0, 0)
-	if err == nil {
-		t.Fatal("expected error for invalid operation type, got nil")
+	_, err := newSvc(&stubTransactionRepo{}).CreateTransaction(context.Background(), "00000000-0000-0000-0000-000000000001", 99, 50.0, 0)
+	if !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown op type, got %v", err)
 	}
 }
 
@@ -226,5 +177,12 @@ func TestCreateTransaction_CreditVoucherAmountIsPositive(t *testing.T) {
 	}
 	if tx.Amount <= 0 {
 		t.Errorf("expected positive amount for credit voucher, got %f", tx.Amount)
+	}
+}
+
+func TestCreateTransaction_MissingInstallments(t *testing.T) {
+	_, err := newSvc(&stubTransactionRepo{}).CreateTransaction(context.Background(), "00000000-0000-0000-0000-000000000001", 2, 1000.0, 0)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for zero installments, got %v", err)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/ts_project/transactions_routine/internal/domain"
 	"github.com/ts_project/transactions_routine/internal/repository"
 	"github.com/ts_project/transactions_routine/internal/service"
 )
@@ -46,13 +45,13 @@ func (h *TransactionHandler) CreateTransaction(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "account_id and operation_type_id are required")
 		return
 	}
-	if body.OperationTypeID == domain.OperationTypeInstallment && body.Installments <= 0 {
-		writeError(w, http.StatusBadRequest, "installments must be greater than 0 for purchase with installments")
-		return
-	}
 
 	tx, err := h.svc.CreateTransaction(r.Context(), body.AccountID, body.OperationTypeID, body.Amount, body.Installments)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			writeError(w, http.StatusBadRequest, "installments must be greater than 0 for purchase with installments")
+			return
+		}
 		if errors.Is(err, repository.ErrNotFound) {
 			writeError(w, http.StatusUnprocessableEntity, "account or operation type not found")
 			return
