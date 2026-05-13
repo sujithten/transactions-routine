@@ -6,16 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ts_project/transactions_routine/db"
@@ -36,7 +32,7 @@ func TestMain(m *testing.M) {
 		dbURL = "postgres://postgres:postgres@localhost:5432/transactions_db?sslmode=disable"
 	}
 
-	if err := runMigrations(dbURL); err != nil {
+	if err := db.RunMigrations(dbURL); err != nil {
 		panic("migrations failed: " + err.Error())
 	}
 
@@ -78,21 +74,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func runMigrations(dbURL string) error {
-	src, err := iofs.New(db.Migrations, "migrations")
-	if err != nil {
-		return err
-	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, strings.Replace(dbURL, "postgres://", "pgx5://", 1))
-	if err != nil {
-		return err
-	}
-	defer m.Close()
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return err
-	}
-	return nil
-}
 
 func truncateAll(p *pgxpool.Pool) {
 	_, err := p.Exec(context.Background(),
@@ -337,6 +318,129 @@ func TestCreateTransaction_MissingInstallments(t *testing.T) {
 		"operation_type_id": 2,
 		"amount":            1200.0,
 		// installments intentionally omitted
+	})
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateAccount_EmptyDocumentNumber(t *testing.T) {
+	resp := postJSON(t, "/accounts", map[string]string{"document_number": ""})
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetAccount_MalformedUUID(t *testing.T) {
+	resp := getJSON(t, "/accounts/abc-123")
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateTransaction_DebitSignEnforcedOnNegativeInput(t *testing.T) {
+	truncate(t)
+	account := createAccount(t, "12345678900")
+
+	resp := postJSON(t, "/transactions", map[string]any{
+		"account_id":        account.ID,
+		"operation_type_id": 1,
+		"amount":            -50.0,
+	})
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var tx domain.Transaction
+	decodeBody(t, resp, &tx)
+
+	if tx.Amount >= 0 {
+		t.Errorf("expected negative amount when caller sends negative debit, got %f", tx.Amount)
+	}
+}
+
+func TestCreateTransaction_InstallmentDueDatesAreMonthly(t *testing.T) {
+	truncate(t)
+	account := createAccount(t, "12345678900")
+
+	resp := postJSON(t, "/transactions", map[string]any{
+		"account_id":        account.ID,
+		"operation_type_id": 2,
+		"amount":            600.0,
+		"installments":      3,
+	})
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var tx domain.Transaction
+	decodeBody(t, resp, &tx)
+
+	if tx.InstallmentPlan == nil {
+		t.Fatal("expected installment plan, got nil")
+	}
+	for i, s := range tx.InstallmentPlan.Schedules {
+		want := tx.EventDate.AddDate(0, i+1, 0)
+		wantDate := time.Date(want.Year(), want.Month(), want.Day(), 0, 0, 0, 0, time.UTC)
+		gotDate := time.Date(s.DueDate.Year(), s.DueDate.Month(), s.DueDate.Day(), 0, 0, 0, 0, time.UTC)
+		if !gotDate.Equal(wantDate) {
+			t.Errorf("schedule %d: want due_date %v, got %v", i+1, wantDate, gotDate)
+		}
+	}
+}
+
+func TestCreateTransaction_ZeroInstallments(t *testing.T) {
+	truncate(t)
+	account := createAccount(t, "12345678900")
+
+	resp := postJSON(t, "/transactions", map[string]any{
+		"account_id":        account.ID,
+		"operation_type_id": 2,
+		"amount":            1200.0,
+		"installments":      0,
+	})
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateTransaction_InvalidOperationType(t *testing.T) {
+	truncate(t)
+	account := createAccount(t, "12345678900")
+
+	resp := postJSON(t, "/transactions", map[string]any{
+		"account_id":        account.ID,
+		"operation_type_id": 99,
+		"amount":            50.0,
+	})
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateTransaction_MissingAccountID(t *testing.T) {
+	resp := postJSON(t, "/transactions", map[string]any{
+		"operation_type_id": 1,
+		"amount":            50.0,
+	})
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateTransaction_MissingOperationType(t *testing.T) {
+	truncate(t)
+	account := createAccount(t, "12345678900")
+
+	resp := postJSON(t, "/transactions", map[string]any{
+		"account_id": account.ID,
+		"amount":     50.0,
 	})
 
 	if resp.StatusCode != http.StatusBadRequest {

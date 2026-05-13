@@ -8,15 +8,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	httpSwagger "github.com/swaggo/http-swagger"
 
@@ -31,7 +26,7 @@ func main() {
 	dbURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/transactions_db?sslmode=disable")
 	addr := getEnv("SERVER_ADDR", ":8080")
 
-	if err := runMigrations(dbURL); err != nil {
+	if err := db.RunMigrations(dbURL); err != nil {
 		log.Fatalf("migrations failed: %v", err)
 	}
 
@@ -80,22 +75,6 @@ func main() {
 	}
 }
 
-func runMigrations(dbURL string) error {
-	src, err := iofs.New(db.Migrations, "migrations")
-	if err != nil {
-		return err
-	}
-	// golang-migrate's pgx/v5 driver is registered under the "pgx5" scheme
-	m, err := migrate.NewWithSourceInstance("iofs", src, strings.Replace(dbURL, "postgres://", "pgx5://", 1))
-	if err != nil {
-		return err
-	}
-	defer m.Close()
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return err
-	}
-	return nil
-}
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

@@ -7,14 +7,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ts_project/transactions_routine/internal/repository"
-	"github.com/ts_project/transactions_routine/internal/service"
 )
 
 type AccountHandler struct {
-	svc *service.AccountService
+	svc accountService
 }
 
-func NewAccountHandler(svc *service.AccountService) *AccountHandler {
+func NewAccountHandler(svc accountService) *AccountHandler {
 	return &AccountHandler{svc: svc}
 }
 
