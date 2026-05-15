@@ -266,7 +266,7 @@ cmd/api/          → entry point: wires dependencies, runs migrations, starts H
 internal/
   domain/         → plain Go structs shared across layers (no framework coupling)
   handler/        → HTTP layer: decode request, validate, call service, encode response
-  service/        → business logic: sign enforcement, installment plan construction
+  service/        → business logic: account validation, DB transaction boundary, operation strategies
   repository/     → database layer: SQL queries via pgx
 db/migrations/    → SQL migration files, embedded into the binary via go:embed
 tests/integration → end-to-end tests against a live database
@@ -289,6 +289,10 @@ Dependencies flow inward: handlers depend on services, services depend on reposi
 **Embedded migrations** — SQL files are embedded into the binary via `//go:embed`. The server runs `migrate.Up()` on startup, so there is no separate migration step and no risk of deploying a binary against an unprepared schema.
 
 **No ORM** — queries are written in plain SQL and mapped to structs using `pgx`'s `RowToAddrOfStructByName` with `db:""` struct tags. This keeps queries readable, predictable, and easy to tune without a query-builder layer in between.
+
+**Strategy pattern for operation types** — each operation type (debit, credit, installment) is an `OperationStrategy` implementation injected into `TransactionService` via a `map[int]OperationStrategy`. The service only validates the account, picks the strategy by ID, and manages the DB transaction boundary. All persistence logic — including installment plan creation — lives inside the strategy itself. Adding a new operation type means writing one new strategy and registering it in `main.go`; the service, handler, and router are untouched.
+
+**Service interfaces in the handler layer** — `AccountHandler` and `TransactionHandler` depend on `accountService` and `transactionService` interfaces defined in the handler package, not on the concrete service types. This follows Go's consumer-defined interface convention and allows handler-level unit tests with stub implementations without modifying the service layer.
 
 ## Environment variables
 
